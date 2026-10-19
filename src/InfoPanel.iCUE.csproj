@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <Platforms>x64</Platforms>
+    <AssemblyName>InfoPanel.iCUE</AssemblyName>
+    <RootNamespace>InfoPanel.iCUE</RootNamespace>
+    <InfoPanelSrc Condition="'$(InfoPanelSrc)' == ''">..\..\infopanel</InfoPanelSrc>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="$(InfoPanelSrc)\InfoPanel.Plugins\InfoPanel.Plugins.csproj">
+      <Private>false</Private>
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </ProjectReference>
+  </ItemGroup>
+  <ItemGroup>
+    <None Update="PluginInfo.ini"><CopyToOutputDirectory>Always</CopyToOutputDirectory></None>
+    <None Update="InfoPanel.iCUE.ini"><CopyToOutputDirectory>Always</CopyToOutputDirectory></None>
+  </ItemGroup>
+</Project>
