@@ -37,6 +37,9 @@ Im **Design** unter **Plugins → iCUE Sensoren → iCUE** erscheinen:
 |---|---|
 | *Sensorname* (z. B. „Behälter") | Zahlenwert als Sensor (mit Min/Max/Durchschnitt) |
 | *Sensorname* **(Anzeige)** | Fertiger Text, z. B. `24.8°C` – zeigt **`--`**, wenn die Protokollierung nicht läuft |
+| *Sensorname* **(Trend)** | Zeichen `▲` steigt, `▼` fällt, `►` gleichbleibend |
+| *Sensorname* **(steigt)** / **(fällt)** / **(steht)** | Nur der jeweilige Pfeil, sonst leer – alle drei auf dieselbe Position legen und je eine Farbe geben (z. B. rot / grün / weiß) |
+| *Sensorname* **(Durchschnitt)** | Durchschnitt seit Beginn der aktuellen Protokolldatei, z. B. `(Ø 22.8°C)` |
 | Protokolldatei | Name der gelesenen CSV-Datei |
 | Letzter Wert von | Zeitstempel des letzten Eintrags |
 
@@ -53,7 +56,17 @@ Ordner=
 MaxAlterSek=180
 ; Nachkommastellen in der Anzeige (0, 1 oder 2)
 Nachkommastellen=1
+; Trendpfeil: Vergleich mit dem Wert von vor so vielen Sekunden
+TrendSek=60
+; Ab dieser Änderung (in °C) zeigt der Pfeil nach oben/unten
+TrendSchwelle=0.2
+; Zeichen für den Trend (steigt / fällt / steht)
+ZeichenSteigt=▲
+ZeichenFaellt=▼
+ZeichenSteht=►
 ```
+
+Der Trendpfeil vergleicht den Mittelwert der letzten 10 Sekunden mit dem Mittelwert von vor `TrendSek` Sekunden – so springt er nicht bei kleinem Messrauschen. Nach dem Start zeigt er `→`, bis genug Verlauf da ist.
 
 Bei einem Protokoll-Intervall von 60 Sekunden sollte `MaxAlterSek` mindestens 180 sein.
 
@@ -69,6 +82,7 @@ Hintergrund: [`beispiel/hintergrund.gif`](beispiel/hintergrund.gif) (animiert, 7
 | Text „GPU" | Arial Fett | Goldenrod | 160 | 205 / 1220 |
 | GPU-Temperatur (Libre: GPU Core) | Arial Fett | Goldenrod | 160 | 720 / 1220 |
 | Wasser (iCUE: Behälter (Anzeige)) | Arial Fett | Light Sky Blue | 155 | 540 / 625 |
+| Trend (iCUE: Behälter (Trend)) | Segoe UI Fett | Light Sky Blue | 155 | vor der Wassertemperatur |
 
 Profil: Hintergrund schwarz, Schrift weiß, Position auf dem zweiten Bildschirm (X 2560, Y 0).
 

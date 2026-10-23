@@ -14,7 +14,20 @@ public class ICuePlugin : BasePlugin
     private string _logOrdner = "";
     private int _maxAlterSek = 180;
     private int _nachkomma = 1;
+    private int _trendSek = 60;
+    private float _trendSchwelle = 0.2f;
+    private const int MittelSek = 10;
+    // InfoPanel zeigt bei leerem Text "0" an – darum ein Leerzeichen statt leer
+    private const string Leer = " ";
+    private string _zeichenSteigt = "▲";
+    private string _zeichenFaellt = "▼";
+    private string _zeichenSteht = "►";
     private readonly List<PluginText> _texte = new();
+    private readonly List<PluginText> _trends = new();
+    private readonly List<PluginText> _steigt = new();
+    private readonly List<PluginText> _faellt = new();
+    private readonly List<PluginText> _steht = new();
+    private readonly List<List<(DateTime zeit, float wert)>> _verlauf = new();
 
     // Sensoren mit fester ID nach Spaltennummer (col1, col2, ...), damit das Layout in InfoPanel stabil bleibt
     private readonly List<PluginSensor> _sensoren = new();
@@ -50,6 +63,14 @@ public class ICuePlugin : BasePlugin
                         _maxAlterSek = m;
                     if (key.Equals("Nachkommastellen", StringComparison.OrdinalIgnoreCase) && int.TryParse(val, out var n) && n >= 0 && n <= 2)
                         _nachkomma = n;
+                    if (key.Equals("TrendSek", StringComparison.OrdinalIgnoreCase) && int.TryParse(val, out var ts) && ts >= 10)
+                        _trendSek = ts;
+                    if (key.Equals("TrendSchwelle", StringComparison.OrdinalIgnoreCase)
+                        && float.TryParse(val.Replace(',', '.'), NumberStyles.Float, CultureInfo.InvariantCulture, out var sw) && sw > 0)
+                        _trendSchwelle = sw;
+                    if (key.Equals("ZeichenSteigt", StringComparison.OrdinalIgnoreCase) && val.Length > 0) _zeichenSteigt = val;
+                    if (key.Equals("ZeichenFaellt", StringComparison.OrdinalIgnoreCase) && val.Length > 0) _zeichenFaellt = val;
+                    if (key.Equals("ZeichenSteht", StringComparison.OrdinalIgnoreCase) && val.Length > 0) _zeichenSteht = val;
                 }
             }
         }
@@ -58,16 +79,30 @@ public class ICuePlugin : BasePlugin
 
     public override void Load(List<IPluginContainer> containers)
     {
-        // Spaltennamen: aus der neuesten Protokolldatei, sonst aus dem Zwischenspeicher
-        var namen = KopfzeileLesen(NeuesteDatei()) ?? CacheLesen();
+        // Feste Plätze: jeder iCUE-Sensor behält seinen Platz (col1, col2 ...), auch wenn in iCUE
+        // weitere Sensoren an- oder abgehakt werden. Gespeichert in plaetze.txt.
+        PlaetzeAbgleichen(KopfzeileLesen(NeuesteDatei()));
+        var namen = _plaetze;
         var container = new PluginContainer("icue", "iCUE");
         for (int i = 0; i < MaxSpalten; i++)
         {
             var name = i < namen.Count ? namen[i] : $"Spalte {i + 1}";
             var s = new PluginSensor($"col{i + 1}", name, 0, Einheit(name));
             var t = new PluginText($"txt{i + 1}", name + " (Anzeige)", "--");
-            _sensoren.Add(s); _texte.Add(t);
-            if (i < Math.Max(namen.Count, 1)) { container.Entries.Add(s); container.Entries.Add(t); }
+            var tr = new PluginText($"trend{i + 1}", name + " (Trend)", _zeichenSteht);
+            var up = new PluginText($"steigt{i + 1}", name + " (steigt)", Leer);
+            var down = new PluginText($"faellt{i + 1}", name + " (fällt)", Leer);
+            var flat = new PluginText($"steht{i + 1}", name + " (steht)", _zeichenSteht);
+            _sensoren.Add(s); _texte.Add(t); _trends.Add(tr); _verlauf.Add(new());
+            _steigt.Add(up); _faellt.Add(down); _steht.Add(flat);
+            var avg = new PluginText($"avg{i + 1}", name + " (Durchschnitt)", Leer);
+            _schnitt.Add(avg);
+            if (i < Math.Max(namen.Count, 1))
+            {
+                container.Entries.Add(s); container.Entries.Add(t); container.Entries.Add(tr);
+                container.Entries.Add(up); container.Entries.Add(down); container.Entries.Add(flat);
+                container.Entries.Add(avg);
+            }
         }
         container.Entries.Add(_datei);
         container.Entries.Add(_stand);
@@ -99,23 +134,153 @@ public class ICuePlugin : BasePlugin
         if (kopf == null || letzte == null) return;
 
         var namen = Spalten(kopf).Skip(1).Select(n => n.Trim()).ToList();
-        CacheSchreiben(namen);
+        PlaetzeAbgleichen(namen);
+        _csvZuPlatz = namen.Select(n => _plaetze.IndexOf(n)).ToArray();
+        DurchschnittNachlesen(datei);
         var werte = Spalten(letzte);
         if (werte.Count > 0) _stand.Value = werte[0].Trim();
 
-        for (int i = 0; i < namen.Count && i < _sensoren.Count; i++)
+        for (int k = 0; k < namen.Count; k++)
         {
-            if (i + 1 >= werte.Count) break;
-            if (Zahl(werte[i + 1], out var v))
+            if (k + 1 >= werte.Count) break;
+            int i = _csvZuPlatz[k];
+            if (i < 0 || i >= _sensoren.Count) continue;
+            if (Zahl(werte[k + 1], out var v))
             {
                 _sensoren[i].Value = v;
                 _texte[i].Value = veraltet ? "--" : v.ToString(_nachkomma == 0 ? "0" : "0." + new string('0', _nachkomma), CultureInfo.InvariantCulture) + (_sensoren[i].Unit ?? "");
+                if (!veraltet) TrendSetzen(i, Trend(i, v));
             }
         }
         if (veraltet) { AlleVeraltet(); _stand.Value = "Protokollierung gestoppt?"; }
     }
 
-    private void AlleVeraltet() { foreach (var t in _texte) t.Value = "--"; }
+    // Durchschnitt seit Beginn der aktuellen iCUE-Protokolldatei (= seit "Protokoll starten" nach dem PC-Start).
+    // Liest nur die neu hinzugekommenen Zeilen, damit auch lange Protokolle schnell bleiben.
+    // ---------- feste Plätze für die iCUE-Sensoren ----------
+    private readonly List<string> _plaetze = new();
+    private bool _plaetzeGeladen;
+    private int[] _csvZuPlatz = Array.Empty<int>();
+    private string PlaetzePfad => Path.Combine(_pluginOrdner, "plaetze.txt");
+
+    private void PlaetzeAbgleichen(List<string>? kopf)
+    {
+        if (!_plaetzeGeladen)
+        {
+            _plaetzeGeladen = true;
+            try
+            {
+                if (File.Exists(PlaetzePfad))
+                    _plaetze.AddRange(File.ReadAllLines(PlaetzePfad, Encoding.UTF8).Where(z => z.Length > 0));
+            }
+            catch { }
+        }
+        if (kopf == null) return;
+        // Neue Sensoren hinten anhängen – Temperaturen zuerst, damit beim allerersten Mal
+        // die Wassertemperatur auf Platz 1 landet
+        var neu = kopf.Where(n => n.Length > 0 && !_plaetze.Contains(n))
+                      .OrderBy(n => Einheit(n) == "°C" ? 0 : 1).ToList();
+        if (neu.Count == 0) return;
+        foreach (var n in neu) if (_plaetze.Count < MaxSpalten) _plaetze.Add(n);
+        try { File.WriteAllLines(PlaetzePfad, _plaetze, new UTF8Encoding(false)); } catch { }
+    }
+
+    private string? _avgDatei;
+    private long _avgPos;
+    private readonly double[] _avgSumme = new double[MaxSpalten];
+    private readonly long[] _avgAnzahl = new long[MaxSpalten];
+    private readonly List<PluginText> _schnitt = new();
+
+    private void DurchschnittNachlesen(string datei)
+    {
+        using var fs = new FileStream(datei, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        if (datei != _avgDatei || fs.Length < _avgPos)
+        {
+            _avgDatei = datei; _avgPos = 0;
+            Array.Clear(_avgSumme); Array.Clear(_avgAnzahl);
+        }
+        if (fs.Length == _avgPos) { SchnittAnzeigen(); return; }
+
+        fs.Seek(_avgPos, SeekOrigin.Begin);
+        var puffer = new byte[fs.Length - _avgPos];
+        int gelesen = 0;
+        while (gelesen < puffer.Length)
+        {
+            int n = fs.Read(puffer, gelesen, puffer.Length - gelesen);
+            if (n <= 0) break;
+            gelesen += n;
+        }
+        int ende = Array.LastIndexOf(puffer, (byte)'\n', gelesen - 1);
+        if (ende < 0) return; // noch keine vollständige Zeile
+
+        bool ersteZeileIstKopf = _avgPos == 0;
+        var text = Encoding.UTF8.GetString(puffer, 0, ende + 1);
+        _avgPos += ende + 1;
+
+        foreach (var roh in text.Split('\n'))
+        {
+            var zeile = roh.Trim('\r', ' ', '﻿');
+            if (zeile.Length == 0) continue;
+            if (ersteZeileIstKopf) { ersteZeileIstKopf = false; continue; }
+            var werte = Spalten(zeile);
+            for (int k = 0; k + 1 < werte.Count && k < _csvZuPlatz.Length; k++)
+            {
+                int i = _csvZuPlatz[k];
+                if (i < 0 || i >= MaxSpalten) continue;
+                if (Zahl(werte[k + 1], out var v)) { _avgSumme[i] += v; _avgAnzahl[i]++; }
+            }
+        }
+        SchnittAnzeigen();
+    }
+
+    private void SchnittAnzeigen()
+    {
+        var format = _nachkomma == 0 ? "0" : "0." + new string('0', _nachkomma);
+        for (int i = 0; i < _schnitt.Count; i++)
+        {
+            if (_avgAnzahl[i] == 0) { _schnitt[i].Value = Leer; continue; }
+            var schnitt = _avgSumme[i] / _avgAnzahl[i];
+            _schnitt[i].Value = "(Ø " + schnitt.ToString(format, CultureInfo.InvariantCulture) + (_sensoren[i].Unit ?? "") + ")";
+        }
+    }
+
+    private void AlleVeraltet()
+    {
+        foreach (var t in _texte) t.Value = "--";
+        for (int i = 0; i < _trends.Count; i++) TrendSetzen(i, "");
+        foreach (var v in _verlauf) v.Clear();
+    }
+
+    // Gesamtpfeil plus je ein Eintrag pro Richtung (nur sichtbar, wenn die Richtung zutrifft) – für eigene Farben in InfoPanel
+    private void TrendSetzen(int i, string pfeil)
+    {
+        _trends[i].Value = pfeil.Length > 0 ? pfeil : Leer;
+        _steigt[i].Value = pfeil == _zeichenSteigt ? pfeil : Leer;
+        _faellt[i].Value = pfeil == _zeichenFaellt ? pfeil : Leer;
+        _steht[i].Value = pfeil == _zeichenSteht ? pfeil : Leer;
+    }
+
+    // Vergleicht den Mittelwert der letzten 10 s mit dem Mittelwert von vor TrendSek Sekunden
+    private string Trend(int i, float wert)
+    {
+        var jetzt = DateTime.UtcNow;
+        var liste = _verlauf[i];
+        liste.Add((jetzt, wert));
+        liste.RemoveAll(e => (jetzt - e.zeit).TotalSeconds > _trendSek + MittelSek + 5);
+
+        var neu = liste.Where(e => (jetzt - e.zeit).TotalSeconds <= MittelSek).Select(e => e.wert).ToList();
+        var alt = liste.Where(e =>
+        {
+            var sek = (jetzt - e.zeit).TotalSeconds;
+            return sek >= _trendSek && sek <= _trendSek + MittelSek;
+        }).Select(e => e.wert).ToList();
+
+        if (neu.Count == 0 || alt.Count == 0) return _zeichenSteht; // noch zu wenig Verlauf
+        var diff = neu.Average() - alt.Average();
+        if (diff >= _trendSchwelle - 0.001f) return _zeichenSteigt;
+        if (diff <= -_trendSchwelle + 0.001f) return _zeichenFaellt;
+        return _zeichenSteht;
+    }
 
     private string? NeuesteDatei()
     {
